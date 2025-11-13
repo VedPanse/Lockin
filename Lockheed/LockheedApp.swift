@@ -106,8 +106,25 @@ struct KeyPressCatcher: NSViewRepresentable {
 }
 #endif
 
+#if os(macOS)
+final class LockheedAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Use regular activation (Dock + Menu Bar). The WindowGroup will open the main window on launch.
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Keep the app alive in the menu bar even when all windows are closed.
+        return false
+    }
+}
+#endif
+
 @main
 struct LockheedApp: App {
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(LockheedAppDelegate.self) private var appDelegate
+    #endif
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -625,9 +642,15 @@ struct MenuBarContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
+                    #if os(macOS)
+                    .pointingHandOnHover()
+                    #endif
                 }
                 Divider()
                 Button("Open Lockheed") { activateApp() }
+                #if os(macOS)
+                .pointingHandOnHover()
+                #endif
             }
             .padding(10)
         }
@@ -655,8 +678,24 @@ struct MenuBarContentView: View {
 
     private func activateApp() {
         NSApp.activate(ignoringOtherApps: true)
-        // Optionally bring the key window to front if one exists
-        NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+        // Try to find an existing window
+        if let window = NSApplication.shared.windows.first {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            // No window exists – create one hosting ContentView
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1100, height: 900),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.isReleasedWhenClosed = false
+            window.center()
+            window.contentView = NSHostingView(rootView: ContentView())
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 }
 #endif
@@ -859,7 +898,12 @@ struct ContentView: View {
                     #if os(iOS)
                     ToolbarItem(placement: .topBarTrailing) { addSectionButton }
                     #else
-                    ToolbarItem(placement: .automatic) { addSectionButton }
+                    ToolbarItem(placement: .automatic) {
+                        addSectionButton
+                            #if os(macOS)
+                            .pointingHandOnHover()
+                            #endif
+                    }
                     #endif
                 }
                 .task { await NotificationManager.requestAuthorization() }
@@ -1000,6 +1044,9 @@ struct SectionCard: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Color(hex: section.accentHex))
                     .controlSize(.small)
+                    #if os(macOS)
+                    .pointingHandOnHover()
+                    #endif
                 } else {
                     VStack(spacing: 8) {
                         ForEach(section.items.sorted(by: { $0.dueDate < $1.dueDate })) { item in
@@ -1034,6 +1081,9 @@ struct ItemRow: View {
                     .font(Font.system(size: 22, weight: .semibold))
             }
             .buttonStyle(.plain)
+            #if os(macOS)
+            .pointingHandOnHover()
+            #endif
             .tint(accent)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1327,3 +1377,16 @@ struct ContentView_Previews: PreviewProvider {
 }
 #endif
 
+#if os(macOS)
+extension View {
+    func pointingHandOnHover() -> some View {
+        self.onHover { inside in
+            if inside {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+    }
+}
+#endif
