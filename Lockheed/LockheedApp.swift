@@ -89,6 +89,14 @@ struct LockheedApp: App {
         .windowStyle(.hiddenTitleBar)
         #endif
         .modelContainer(for: [FocusSection.self, FocusItem.self])
+
+        #if os(macOS)
+        MenuBarExtra("Lockheed", systemImage: "bolt.fill") {
+            MenuBarContentView()
+        }
+        .menuBarExtraStyle(.window)
+        .modelContainer(for: [FocusSection.self, FocusItem.self])
+        #endif
     }
 }
 
@@ -122,8 +130,9 @@ final class FocusItem: Identifiable {
     var createdAt: Date
     var notes: String?
     var section: FocusSection?
+    var previousSectionID: UUID?      // Added property to remember original section ID
 
-    init(id: UUID = UUID(), title: String, dueDate: Date, startDate: Date? = nil, isCompleted: Bool = false, createdAt: Date = .now, notes: String? = nil, section: FocusSection? = nil) {
+    init(id: UUID = UUID(), title: String, dueDate: Date, startDate: Date? = nil, isCompleted: Bool = false, createdAt: Date = .now, notes: String? = nil, section: FocusSection? = nil, previousSectionID: UUID? = nil) {
         self.id = id
         self.title = title
         self.dueDate = dueDate
@@ -132,6 +141,7 @@ final class FocusItem: Identifiable {
         self.createdAt = createdAt
         self.notes = notes
         self.section = section
+        self.previousSectionID = previousSectionID
     }
 }
 
@@ -180,7 +190,7 @@ import CoreGraphics
 
 struct ConfettiView: UXViewRepresentable {
     var intensity: CGFloat = 0.75
-    var duration: TimeInterval = 1.5
+    var duration: TimeInterval = 5.0
 
     #if os(iOS)
     func makeUIView(context: Context) -> UIView { makePlatformView() }
@@ -200,21 +210,23 @@ struct ConfettiView: UXViewRepresentable {
         let emitter = CAEmitterLayer()
 
         #if os(iOS)
-        let width  = view.bounds.width
-        let height = view.bounds.height
-        emitter.emitterPosition = CGPoint(x: width/2, y: -10)         // just above the top edge
-        let emissionDown: CGFloat = .pi / 2                            // downwards in iOS coords
-        let gravityY: CGFloat = 300                                    // positive -> downward in iOS
+        // Use window bounds to ensure we emit from the absolute top of the screen
+        let bounds = view.window?.bounds ?? UIScreen.main.bounds
+        let width  = bounds.width
+        emitter.emitterPosition = CGPoint(x: bounds.midX, y: 0) // absolute top-center
+        let emissionDown: CGFloat = .pi / 2                      // straight down in iOS coords
+        let gravityY: CGFloat = 300                              // positive -> downward in iOS
         #else
-        let width  = view.bounds.size.width
-        let height = view.bounds.size.height
-        emitter.emitterPosition = CGPoint(x: width/2, y: height + 10)  // just above the top edge (AppKit up axis)
-        let emissionDown: CGFloat = -.pi / 2                           // downwards (toward -Y) in AppKit
-        let gravityY: CGFloat = -350                                   // negative -> downward in AppKit
+        // Use screen frame to ensure we emit from the absolute top of the window/screen
+        let screenFrame = view.window?.screen?.frame ?? NSScreen.main?.frame ?? view.bounds
+        let width  = screenFrame.size.width
+        emitter.emitterPosition = CGPoint(x: screenFrame.midX, y: screenFrame.size.height) // absolute top-center in AppKit (origin bottom-left)
+        let emissionDown: CGFloat = -.pi / 2                     // straight down (toward -Y) in AppKit
+        let gravityY: CGFloat = -350                             // negative -> downward in AppKit
         #endif
 
         emitter.emitterShape = .line
-        emitter.emitterSize = CGSize(width: width, height: 2)
+        emitter.emitterSize = CGSize(width: width, height: 1)
 
         let colors: [CGColor] = [
             UXColor.systemBlue.cgColor,
@@ -268,9 +280,9 @@ struct ConfettiView: UXViewRepresentable {
         for i in 0..<6 {
             let cell = CAEmitterCell()
             cell.birthRate = Float(8 * intensity)
-            cell.lifetime = 4.0
+            cell.lifetime = Float(duration)
             cell.lifetimeRange = 1.0
-            cell.velocity = 200
+            cell.velocity = 180
             cell.velocityRange = 80
             cell.emissionLongitude = emissionDown
             cell.emissionRange = .pi / 8
@@ -290,9 +302,9 @@ struct ConfettiView: UXViewRepresentable {
         for i in 0..<4 {
             let ribbon = CAEmitterCell()
             ribbon.birthRate = Float(5 * intensity)
-            ribbon.lifetime = 4.5
+            ribbon.lifetime = Float(duration)
             ribbon.lifetimeRange = 1.0
-            ribbon.velocity = 180
+            ribbon.velocity = 160
             ribbon.velocityRange = 60
             ribbon.emissionLongitude = emissionDown
             ribbon.emissionRange = .pi / 10
@@ -318,7 +330,7 @@ struct ConfettiView: UXViewRepresentable {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
             emitter.birthRate = 0
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { emitter.removeFromSuperlayer() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { emitter.removeFromSuperlayer() }
         }
     }
 }
@@ -447,17 +459,172 @@ struct HeaderBannerView: View {
     }
 }
 
+// Insert new FocusBannerView here:
+
+struct FocusBannerView: View {
+    var height: CGFloat = 180
+
+    var body: some View {
+        Group {
+            #if os(iOS)
+            if UIImage(named: "Focus") != nil {
+                Image("Focus")
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                placeholder
+            }
+            #elseif os(macOS)
+            if NSImage(named: "Focus") != nil {
+                Image("Focus")
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                placeholder
+            }
+            #endif
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipped()
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            Color.gray.opacity(0.12)
+            Label("Missing Focus image", systemImage: "photo")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+#if os(macOS)
+struct MenuBarContentView: View {
+    @Environment(\.modelContext) private var context
+    @Query private var sections: [FocusSection]
+
+    private var firstRunningItem: FocusItem? {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        return sections
+            .flatMap { $0.items }
+            .filter { item in
+                guard !item.isCompleted else { return false }
+                let startDay: Date = item.startDate.map { cal.startOfDay(for: $0) } ?? today
+                let dueDay = cal.startOfDay(for: item.dueDate)
+                return (startDay...dueDay).contains(today)
+            }
+            .sorted { $0.dueDate < $1.dueDate }
+            .first
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                #if os(iOS)
+                if UIImage(named: "SnowyMountain") != nil {
+                    Image("SnowyMountain")
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    ZStack {
+                        Color.gray.opacity(0.12)
+                        Label("Missing SnowyMountain", systemImage: "photo")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                #elseif os(macOS)
+                if NSImage(named: "SnowyMountain") != nil {
+                    Image("SnowyMountain")
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    ZStack {
+                        Color.gray.opacity(0.12)
+                        Label("Missing SnowyMountain", systemImage: "photo")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                #endif
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 120)
+            .clipped()
+            VStack(alignment: .leading, spacing: 8) {
+                if let item = firstRunningItem {
+                    Button {
+                        activateApp()
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Focus Now")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(item.title)
+                                .font(.headline)
+                            HStack(spacing: 8) {
+                                if let start = item.startDate {
+                                    Label { Text(start, style: .date) } icon: { Image(systemName: "play.fill") }
+                                }
+                                Label { Text(item.dueDate, style: .date) } icon: { Image(systemName: "stop.fill") }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    Text("No running task today")
+                        .foregroundStyle(.secondary)
+                }
+                Divider()
+                Button("Open Lockheed") { activateApp() }
+            }
+            .padding(10)
+        }
+        .frame(minWidth: 240)
+    }
+
+    private func activateApp() {
+        NSApp.activate(ignoringOtherApps: true)
+        // Optionally bring the key window to front if one exists
+        NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+    }
+}
+#endif
+
 // MARK: - ContentView.swift
 
 struct ContentView: View {
     @Environment(\.modelContext) private var context
-    @Query(sort: \FocusSection.title) private var sections: [FocusSection]
+    @Query private var sections: [FocusSection]
     @State private var showAddSection = false
     @State private var showAddItemForSection: FocusSection?
     @State private var showConfetti = false
     @State private var isFocusMode = false
     @State private var focusSelection: Int = 0
     @State private var scrollAccum: CGFloat = 0
+
+    @State private var showEditItem: FocusItem? = nil
+    @State private var pendingEditSnapshot: FocusItem? = nil
+
+    private func completedSection() -> FocusSection {
+        if let existing = sections.first(where: { $0.title == "Completed" }) {
+            return existing
+        }
+        let new = FocusSection(title: "Completed", accentHex: "#9AA0A6")
+        context.insert(new)
+        return new
+    }
+
+    private var orderedSections: [FocusSection] {
+        var list = sections
+        // Ensure Completed section (if exists) is last
+        list.sort { a, b in
+            if a.title == "Completed" { return false }
+            if b.title == "Completed" { return true }
+            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+        }
+        return list
+    }
 
     private var currentRunningItems: [FocusItem] {
         let cal = Calendar.current
@@ -558,19 +725,51 @@ struct ContentView: View {
                         EmptyState()
                             .padding(.top, 80)
                     } else {
-                        ForEach(sections) { section in
+                        ForEach(orderedSections) { section in
                             SectionCard(
                                 section: section,
                                 onAddItem: { showAddItemForSection = section },
                                 onToggleComplete: { item in
                                     withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                        let wasCompleted = item.isCompleted
                                         item.isCompleted.toggle()
-                                        if item.isCompleted { showConfetti = true }
+
+                                        if !wasCompleted && item.isCompleted {
+                                            // Just completed: show confetti and move to Completed, remembering original section
+                                            showConfetti = true
+                                            let completed = completedSection()
+
+                                            // Remember original section id
+                                            item.previousSectionID = item.section?.id
+
+                                            // Remove from current section
+                                            if let currentSection = item.section, let idx = currentSection.items.firstIndex(where: { $0.id == item.id }) {
+                                                currentSection.items.remove(at: idx)
+                                            }
+                                            // Move into Completed
+                                            item.section = completed
+                                            completed.items.append(item)
+                                        } else if wasCompleted && !item.isCompleted {
+                                            // Just un-completed: restore to original section if available
+                                            if let originalID = item.previousSectionID, let target = sections.first(where: { $0.id == originalID }) {
+                                                // Remove from Completed (current section)
+                                                if let currentSection = item.section, let idx = currentSection.items.firstIndex(where: { $0.id == item.id }) {
+                                                    currentSection.items.remove(at: idx)
+                                                }
+                                                item.section = target
+                                                target.items.append(item)
+                                            }
+                                            // Clear the stored previous id either way
+                                            item.previousSectionID = nil
+                                        }
                                     }
                                 },
                                 onDeleteItem: { item in
                                     NotificationManager.cancel(item: item)
                                     context.delete(item)
+                                },
+                                onEditItem: { item in
+                                    showEditItem = item
                                 }
                             )
                         }
@@ -607,6 +806,14 @@ struct ContentView: View {
                     }
                     .applyIfiOSPresentationDetents()
                 }
+                .sheet(item: $showEditItem) { item in
+                    EditItemView(item: item) { updatedItem in
+                        // Reschedule notification
+                        NotificationManager.cancel(item: updatedItem)
+                        NotificationManager.schedule(item: updatedItem)
+                    }
+                    .applyIfiOSPresentationDetents()
+                }
                 .overlay(alignment: .top) {
                     if showConfetti {
                         ConfettiView()
@@ -620,10 +827,16 @@ struct ContentView: View {
                     }
                 }
                 .overlay(alignment: .top) {
-                    HeaderBannerView(height: 260)
-                        .ignoresSafeArea(edges: .top)
-                        .allowsHitTesting(false)
-                        .zIndex(0)
+                    Group {
+                        if isFocusMode {
+                            FocusBannerView(height: 260)
+                        } else {
+                            HeaderBannerView(height: 260)
+                        }
+                    }
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+                    .zIndex(0)
                 }
                 .overlay(alignment: .topTrailing) {
                     HStack(spacing: 8) {
@@ -688,6 +901,7 @@ struct SectionCard: View {
     var onAddItem: () -> Void
     var onToggleComplete: (FocusItem) -> Void
     var onDeleteItem: (FocusItem) -> Void
+    var onEditItem: (FocusItem) -> Void
 
     var body: some View {
         Card(accent: Color(hex: section.accentHex)) {
@@ -722,7 +936,8 @@ struct SectionCard: View {
                             ItemRow(item: item,
                                     accent: Color(hex: section.accentHex),
                                     toggle: { onToggleComplete(item) },
-                                    delete: { onDeleteItem(item) })
+                                    delete: { onDeleteItem(item) },
+                                    edit: { onEditItem(item) })
                         }
                     }
                 }
@@ -740,6 +955,7 @@ struct ItemRow: View {
     var accent: Color
     var toggle: () -> Void
     var delete: () -> Void
+    var edit: () -> Void
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -762,10 +978,7 @@ struct ItemRow: View {
             Spacer()
             Menu {
                 Button("Edit", systemImage: "pencil") {
-                    // Minimal: edit inline by nudging date +1h for demo; extend with a proper sheet if desired.
-                    withAnimation { item.dueDate = Calendar.current.date(byAdding: .hour, value: 1, to: item.dueDate) ?? item.dueDate }
-                    NotificationManager.cancel(item: item)
-                    NotificationManager.schedule(item: item)
+                    edit()
                 }
                 Button("Copy ID", systemImage: "doc.on.doc") {
                     #if os(iOS)
@@ -859,41 +1072,51 @@ struct AddItemView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("New Task in \(section.title)") {
-                    TextField("Task", text: $title)
-                    Toggle("Start time", isOn: Binding(
-                        get: { startDate != nil },
-                        set: { newValue in
-                            if newValue {
-                                if startDate == nil { startDate = Date() }
-                            } else {
-                                startDate = nil
-                            }
+            VStack(spacing: 16) {
+                Text("New Task")
+                    .font(.title2).bold()
+                    .padding(.top, 8)
+                Form {
+                    Section {
+                        HStack {
+                            Image(systemName: "square.and.pencil")
+                            TextField("Task title", text: $title)
                         }
-                    ))
-                    if startDate != nil {
-                        let startBinding = Binding<Date>(
-                            get: { startDate ?? Date() },
-                            set: { startDate = $0 }
-                        )
-                        DatePicker("Start", selection: startBinding, displayedComponents: [.date, .hourAndMinute])
+                        Toggle("Start time", isOn: Binding(
+                            get: { startDate != nil },
+                            set: { newValue in
+                                if newValue {
+                                    if startDate == nil { startDate = Date() }
+                                } else {
+                                    startDate = nil
+                                }
+                            }
+                        ))
+                        if startDate != nil {
+                            let startBinding = Binding<Date>(
+                                get: { startDate ?? Date() },
+                                set: { startDate = $0 }
+                            )
+                            DatePicker("Start", selection: startBinding, displayedComponents: [.date, .hourAndMinute])
+                        }
+                        DatePicker("Due", selection: $dueDate, displayedComponents: [.date, .hourAndMinute])
+                    } header: {
+                        Label("Details", systemImage: "info.circle")
                     }
-                    DatePicker("Due", selection: $dueDate, displayedComponents: [.date, .hourAndMinute])
                 }
-                .onChange(of: startDate) { oldValue, newValue in
-                    if let s = newValue, dueDate < s { dueDate = s }
-                }
-                .onChange(of: dueDate) { oldValue, newValue in
-                    if let s = startDate, newValue < s { startDate = newValue }
-                }
+                .scrollContentBackground(.hidden)
+                .background(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+                .padding()
             }
+            .background(VisualEffectBlur().ignoresSafeArea())
             .navigationTitle("Add Task")
-            .onAppear {
-                let eight = nextEightAM()
-                startDate = eight
-                dueDate = eight
-            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: { dismiss() }) }
                 ToolbarItem(placement: .confirmationAction) {
@@ -903,6 +1126,86 @@ struct AddItemView: View {
                         onCreate(item)
                         dismiss()
                     }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - EditItemView
+
+struct EditItemView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var item: FocusItem
+
+    var onSave: (FocusItem) -> Void
+
+    @State private var title: String = ""
+    @State private var dueDate: Date = Date()
+    @State private var notes: String = ""
+    @State private var startDate: Date? = nil
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                Text("Edit Task")
+                    .font(.title2).bold()
+                    .padding(.top, 8)
+                Form {
+                    Section {
+                        HStack {
+                            Image(systemName: "square.and.pencil")
+                            TextField("Task title", text: $title)
+                        }
+                        Toggle("Start time", isOn: Binding(
+                            get: { startDate != nil },
+                            set: { newValue in
+                                if newValue {
+                                    if startDate == nil { startDate = Date() }
+                                } else {
+                                    startDate = nil
+                                }
+                            }
+                        ))
+                        if startDate != nil {
+                            let startBinding = Binding<Date>(
+                                get: { startDate ?? Date() },
+                                set: { startDate = $0 }
+                            )
+                            DatePicker("Start", selection: startBinding, displayedComponents: [.date, .hourAndMinute])
+                        }
+                        DatePicker("Due", selection: $dueDate, displayedComponents: [.date, .hourAndMinute])
+                    } header: {
+                        Label("Details", systemImage: "info.circle")
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .background(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+                .padding()
+            }
+            .background(VisualEffectBlur().ignoresSafeArea())
+            .navigationTitle("Edit Task")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: { dismiss() }) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        item.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                        item.dueDate = dueDate
+                        item.startDate = startDate
+                        item.notes = notes.isEmpty ? nil : notes
+                        onSave(item)
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
                     .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
