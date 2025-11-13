@@ -75,6 +75,37 @@ struct ScrollWheelCatcher: NSViewRepresentable {
 }
 #endif
 
+#if os(macOS)
+struct KeyPressCatcher: NSViewRepresentable {
+    var onKeyDown: (NSEvent) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = KeyCatcherView()
+        view.onKeyDown = onKeyDown
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        DispatchQueue.main.async {
+            view.window?.makeFirstResponder(view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class KeyCatcherView: NSView {
+        var onKeyDown: ((NSEvent) -> Void)?
+        override var acceptsFirstResponder: Bool { true }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.makeFirstResponder(self)
+        }
+        override func keyDown(with event: NSEvent) {
+            onKeyDown?(event)
+        }
+    }
+}
+#endif
+
 @main
 struct LockheedApp: App {
     var body: some Scene {
@@ -503,6 +534,8 @@ struct MenuBarContentView: View {
     @Environment(\.modelContext) private var context
     @Query private var sections: [FocusSection]
 
+    @State private var selectedIndex: Int = 0
+
     private var firstRunningItem: FocusItem? {
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
@@ -516,6 +549,20 @@ struct MenuBarContentView: View {
             }
             .sorted { $0.dueDate < $1.dueDate }
             .first
+    }
+
+    private var runningItems: [FocusItem] {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        return sections
+            .flatMap { $0.items }
+            .filter { item in
+                guard !item.isCompleted else { return false }
+                let startDay: Date = item.startDate.map { cal.startOfDay(for: $0) } ?? today
+                let dueDay = cal.startOfDay(for: item.dueDate)
+                return (startDay...dueDay).contains(today)
+            }
+            .sorted { $0.dueDate < $1.dueDate }
     }
 
     var body: some View {
@@ -550,8 +597,14 @@ struct MenuBarContentView: View {
             .frame(maxWidth: .infinity)
             .frame(height: 120)
             .clipped()
+
             VStack(alignment: .leading, spacing: 8) {
-                if let item = firstRunningItem {
+                if runningItems.isEmpty {
+                    Text("No running task today")
+                        .foregroundStyle(.secondary)
+                } else {
+                    let safeIndex = min(max(0, selectedIndex), runningItems.count - 1)
+                    let item = runningItems[safeIndex]
                     Button {
                         activateApp()
                     } label: {
@@ -571,9 +624,7 @@ struct MenuBarContentView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                } else {
-                    Text("No running task today")
-                        .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
                 }
                 Divider()
                 Button("Open Lockheed") { activateApp() }
@@ -581,6 +632,25 @@ struct MenuBarContentView: View {
             .padding(10)
         }
         .frame(minWidth: 240)
+        .overlay(
+            KeyPressCatcher { event in
+                switch event.keyCode {
+                case 123: // left arrow
+                    if !runningItems.isEmpty {
+                        selectedIndex = max(selectedIndex - 1, 0)
+                    }
+                case 124: // right arrow
+                    if !runningItems.isEmpty {
+                        selectedIndex = min(selectedIndex + 1, runningItems.count - 1)
+                    }
+                default:
+                    break
+                }
+            }
+        )
+        .onAppear {
+            selectedIndex = 0
+        }
     }
 
     private func activateApp() {
